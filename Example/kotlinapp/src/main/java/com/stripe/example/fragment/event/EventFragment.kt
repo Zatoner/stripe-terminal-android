@@ -5,6 +5,7 @@ import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Toast
+import androidx.activity.result.launch
 import androidx.databinding.DataBindingUtil
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.FragmentActivity
@@ -40,10 +41,15 @@ import com.stripe.stripeterminal.external.models.SetupIntent
 import com.stripe.stripeterminal.external.models.SetupIntentCancellationParameters
 import com.stripe.stripeterminal.external.models.SetupIntentParameters
 import com.stripe.stripeterminal.external.models.TerminalException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import retrofit2.Call
 import retrofit2.Response
 import java.lang.ref.WeakReference
 import java.util.Locale
+import java.util.concurrent.TimeUnit
 
 /**
  * The `EventFragment` displays events as they happen during a payment flow
@@ -145,8 +151,31 @@ class EventFragment : Fragment(), MobileReaderListener {
         object : PaymentIntentCallback {
             override fun onSuccess(paymentIntent: PaymentIntent) {
                 addEvent("Collected PaymentMethod", "terminal.collectPaymentMethod")
-                Terminal.getInstance().confirmPaymentIntent(paymentIntent, confirmPaymentIntentCallback)
+
+                // Store Cancelable to cancel the payment intent
+                val cancelable = Terminal.getInstance().confirmPaymentIntent(paymentIntent, confirmPaymentIntentCallback)
                 viewModel.collectTask = null
+
+                CoroutineScope(Dispatchers.Main).launch {
+                    // Delay for 5 seconds, this returns:
+                    // com.stripe.stripeterminal.external.models. TerminalException: Cannot cancel this operation while it is waiting for a network response
+                    // if confirmPaymentIntent operation doesn't complete within 5 seconds. This usually
+                    // happens on a bad network (possible to emulate via throttling the internet connection)
+                    // otherwise try a shorter delay if it's not possible to emulate a bad network
+                    // will still return TerminalException on a shorter delay like 500ms
+                    delay(5000)
+
+                    // Expected Behaviour: calling cancelable.cancel() should stop the payment flow
+                    // but instead .cancel doesn't do anything and the payment flow continues
+                    cancelable.cancel(object : Callback {
+                        override fun onSuccess() {
+                            addEvent("Canceled PaymentIntent", "terminal.cancelPaymentIntent")
+                        }
+                        override fun onFailure(e: TerminalException) {
+                            this@EventFragment.onFailure(e)
+                        }
+                    })
+                }
             }
 
             override fun onFailure(e: TerminalException) {
